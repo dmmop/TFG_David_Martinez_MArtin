@@ -1,0 +1,54 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<?xml-stylesheet type="text/xsl" href="configuration.xsl"?>
+
+<!-- hdfs-site.xml -->
+
+<configuration>
+<property>
+	<name>dfs.replication</name>
+	<value>1</value>
+	<description>Factor de replicación entre nodos</description> 
+</property>
+<property>
+	<name>dfs.permission</name>
+	<value>false</value>
+	<description>Permisos de acceso específicos</description> 
+</property>
+
+<property>
+        <name>dfs.namenode.name.dir</name>
+        <value>file:/home/david/hadoop/tmp/hadoop-david/dfs/name</value>
+	<description>Carpeta correspondiente al NameNode</description> 
+</property>
+
+<property>
+        <name>dfs.datanode.data.dir</name>
+        <value>file:/home/david/hadoop/tmp/hadoop-david/dfs/data</value>
+	<description>Carpeta correspondiente al DataNode</description> 
+</property>
+
+<property>
+        <name>dfs.namenode.checkpoint.dir</name>
+        <value>file:/home/david/hadoop/tmp/hadoop-david/dfs/namesecondary</value>
+	<description>Carpeta correspondiente al NameSecondary</description> 
+</property>
+
+ <property>
+	<name>dfs.block.size</name>
+	<value>134217728</value>
+	<description>Tamanno maximo de bloque de archivo (128Mb)</description> 
+ </property>
+<property>
+  	<name>dfs.webhdfs.enabled</name>
+	<value>true</value>
+</property>
+
+
+
+
+
+
+
+
+
+</configuration>

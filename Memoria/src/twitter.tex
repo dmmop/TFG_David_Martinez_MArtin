@@ -1,0 +1,161 @@
+\chapter{Twitter \label{sec:twitter}}
+
+\section{Introducción}
+Twitter \cite{twitter} es una plataforma de comunicación bidireccional con naturaleza de red social (porque permite elegir con quien te relacionas). Cuyos mensajes están limitados a 280 caracteres. Aquí los usuarios publican sus opiniones personales o anuncios que consideran importantes. Proporciona una \gls{API} que permite obtener estos mensajes (\textit{tweets}) en tiempo real.
+
+La idea nación en 1992, en la mente de \textit{Jack Dorsey}, inspirada en el \textit{software} de rastreo de los taxistas. Finalmente el proyecto se concretó en 2006 como un servicio interno entre los empleados de \textit{Odeo} y fue lanzado exitosamente en 2007 gracias a la popularidad de los \textit{smartphones}
+
+Hoy día Twitter es uno de los sistemas de comunicación más utilizados, no solo para información intrascendente, social, sino como herramienta de comunicación entre profesionales.
+
+\clearpage
+\section{Aprovisionamiento de datos}
+Para realizar el aprovisionamiento de datos en Twitter, el primer movimiento consiste en informarse sobre la \gls{API} de Twitter \cite{apiTwitter}, rápidamente se puede observar que ofrece tres niveles de acceso: al archivo completo, a los datos de la última semana y a los datos en tiempo real. Debido a que los dos primeros niveles requieren reuniones, pago y aprobación por parte de la empresa, vamos a utilizar los datos en tiempo real.
+
+La captación de \textit{tweets} en tiempo real y su ingesta en \gls{HDFS} se va a realizar a través de \textit{Apache Flume}, para ello se va a configurar un agente que nos permita obtenerlos y almacenarlos en \gls{HDFS}.
+
+\subsection{Agente de \textit{Apache Flume}}
+Para este caso específico \textit{Cloudera} \cite{cloudera} proporciona una librería de java que permite obtener los \textit{tweets} en formato \gls{JSON}, lo que simplificará enormemente el análisis y el filtrado de datos.
+
+El agente de \textit{Apache Flume} está completo en el código \ref{flumeAgent}, se definen el origen (\textit{source}), el canal (\textit{channel}) y el sumidero de datos (\textit{sink}), la primera parte de la configuración corresponde a Twitter, donde se deberán indicar las cuatro claves que proporciona el \gls{API} del mismo y los \textit{keywords} que se desean obtener, los cuales han sido obtenidos anteriormente en el análisis de \textit{Stack Overflow} y aparecen en la tabla \ref{stof:anaTop}.
+
+La siguiente parte del código corresponde al sumidero o \textit{sink}, en inglés, donde se le indica que los datos se mantienen en memoria y que se almacenan en \gls{HDFS}, también se especifican los datos necesarios para la conexión con el clúster de \textit{Apache Hadoop}; así como datos más específicos dependientes de la configuración del clúster.
+
+\begin{lstlisting}[label=flumeAgent,language=make,frame=single,caption=Fichero de configuración del agente de \textit{Apache Flume} para \textit{Twitter}.]
+TwitterAgent.sources = Twitter
+TwitterAgent.channels = MemChannel
+TwitterAgent.sinks = HDFS
+
+TwitterAgent.sources.Twitter.type = com.cloudera.flume.source.TwitterSource
+TwitterAgent.sources.Twitter.channels = MemChannel
+TwitterAgent.sources.Twitter.consumerKey = <ConsumerKey>
+TwitterAgent.sources.Twitter.consumerSecret = <ConsumerSecret>
+TwitterAgent.sources.Twitter.accessToken = <AccessToken>
+TwitterAgent.sources.Twitter.accessTokenSecret = <AccessTokenSecret>
+TwitterAgent.sources.Twitter.keywords = javascript, androiddev , python , c++ , php , iosdev , html, kotlin, php, typescript, powershell, git, github, groovy, maven, cplusplus, springboot, haskell, androidstudio, intellij, netbeans, oracle, mysql, cprograming, c#
+
+
+TwitterAgent.sinks.HDFS.channel = MemChannel
+TwitterAgent.sinks.HDFS.type = hdfs
+TwitterAgent.sinks.HDFS.hdfs.path = hdfs://david-hdp:9000/user/david/flume/tweets/%Y-%m-%d/
+TwitterAgent.sinks.HDFS.hdfs.fileType = DataStream
+TwitterAgent.sinks.HDFS.hdfs.writeFormat = Text
+TwitterAgent.sinks.HDFS.hdfs.batchSize = 100
+TwitterAgent.sinks.HDFS.hdfs.rollSize = 100000
+TwitterAgent.sinks.HDFS.hdfs.rollCount = 10000
+
+TwitterAgent.channels.MemChannel.type = memory
+TwitterAgent.channels.MemChannel.capacity = 10000
+TwitterAgent.channels.MemChannel.transactionCapacity = 100
+\end{lstlisting}
+
+\paragraph{Lanzamiento del agente.} Para el inicio del agente de \textit{Apache Flume} se utiliza el comando del código \ref{launchFlume} y se deja funcionar en segundo plano para que se vayan almacenando una cantidad significativa de \textit{tweets}.
+
+\begin{lstlisting}[label=launchFlume,language=sh,frame=single,caption=Comando de lanzamiento del agente de \textit{Apache Flume} para \textit{Twitter}.]
+flume-ng agent --conf /opt/flume/conf --conf-file /home/david/scripts/Flume-TwitterAgent.conf
+\end{lstlisting}
+
+\section{Análisis de datos}
+Para el análisis de datos se configurará una sesión de \textit{Apache Spark} como se ha indicado en el código \ref{stof:anaImport} y cargar los datos del aprovisionamiento de Twitter, la primera parte consiste en identificar el \textit{schema} para visualizar la estructura de los datos proporcionados por Twitter. La estructura completa está compuesta por un total de $1241$ campos, puede verse en el apéndice \ref{sc:tweet}, aquí se muestra un pequeño extracto en el fragmento de código \ref{tw:struct}.
+
+\begin{lstlisting}[label=tw:struct,frame=single,caption=Extracto del esquema de un \textit{tweet}.]
+|-- created_at: string (nullable = true)
+|-- geo: struct (nullable = true)
+|    |-- coordinates: array (nullable = true)
+|    |    |-- element: double (containsNull = true)
+|    |-- type: string (nullable = true)
+|-- lang: string (nullable = true)
+|-- place: struct (nullable = true)
+|    |-- country: string (nullable = true)
+|    |-- country_code: string (nullable = true)
+|    |-- full_name: string (nullable = true)
+|    |-- id: string (nullable = true)
+|    |-- name: string (nullable = true)
+|    |-- place_type: string (nullable = true)
+|    |-- url: string (nullable = true)
+|-- text: string (nullable = true)
+\end{lstlisting}
+
+Para resolver algunos de los \textit{insights} planteados en la sección \ref{insights}, en este caso aprovecharemos los datos que proporciona Twitter sobre el idioma en el que esta escrito un \textit{tweet}, así como la ubicación desde la que se emite el mismo.
+
+Tras un periodo de análisis de los campos existentes se descubren varios hechos:
+\begin{itemize}
+	\item Existe un campo llamado \textit{``geo''} el cual corresponde a un campo antiguo (\textit{deprecated}), el cual ya no debería estar en uso, por tanto se descarta para precisar la ubicación.
+	
+	\item Una estructura llamada \textit{``place''} que proporciona varios campos referentes a la ubicación del usuario, cuyo dato se rige por la \gls{ISO} 3166-1 alpha-2 \cite{isogeo}.
+
+	\item \textit{``created\_at''} proporciona la fecha de creación del \textit{tweet} en cuestión, aunque para este análisis no resultará relevante.
+	
+	\item El campo \textit{``lang''} indica el idioma en el que está escrito el \textit{tweet}, bajo la normativa de estandarización \gls{ISO} 639-1:2002 \cite{isolang}.
+\end{itemize}
+
+Con esto en mente vamos a realizar un script en \textit{Apache Spark} que nos permita extraer estos datos y almacenarlos. En un clúster más grande y para una empresa \textit{data driven} estos datos se filtrarían de una forma menor para futuros análisis, es más, prácticamente no recibirían ninguna transformación.
+
+\clearpage
+\section{Procesado de datos}
+
+\subsection{Script Apache Spark}
+Como en casos anteriores, se declaran las variables necesarias y se inicia una sesión de \textit{Apache Spark} y se cargan los datos (ver código \ref{stof:anaImport}). Por motivos de espacio en el clúster se filtrará periódicamente y se almacenará el resultado en \gls{HDFS}.
+\begin{lstlisting}[label=tw:sql,language=sql,frame=single,caption={Consulta \gls{SQL} para la extraccion de datos de Twitter}.]
+SELECT 
+	lang,
+	place.country_code,
+	text
+FROM
+	tweets
+WHERE
+	place IS NOT NULL;
+\end{lstlisting}
+
+Se realiza el filtrado con la consulta \gls{SQL} que aparece en el código \ref{tw:sql} de la forma ya mostrada en el código \ref{stof:anaTopSQL}. Esta consulta extraerá el país, el lenguaje que se menciona en el \textit{tweet} y el idioma en el que está escrito. El segundo filtro comprueba que aparezca alguno mencionado, y esto es debido a que la \gls{API} de Twitter no filtra las palabras por contenido literal, sino por relación.
+
+Por último se almacenan los resultados en HDFS para su posterior uso, este resultado se graba en una carpeta con múltiples archivos. Para simplificar el contenido y por utilizarlo en la generación de un mapa posterior, se creará un \gls{CSV}, pero no es posible añadirle cabecera al fichero, por tanto para resolver esto y automatizar el proceso se creará un pequeño script \textit{bash}.
+
+\subsection{Script Bash para normalizar resultados}
+El script tiene la función principal de unir todos los ficheros generados por el proceso anterior y darle una cabecera al fichero \gls{CSV}.
+
+Este contiene muchos comandos que están explicados en el código \ref{tw:bash1}, además se realizan dos extracciones, una con los ficheros que contienen datos de geolocalización y otra sin ellos. No existe variación en los comandos a excepción de la cabecera asignada y la estructura de carpetas.
+
+\begin{lstlisting}[label=tw:bash1,language=sh,frame=single,caption=Comandos utilizados durante el proceso de unificación de datos., firstnumber=1,numbers=left]
+#!/bin/bash
+# Comrpueba si existe el fichero (0) o si no existe (1)
+check_nongeo="hdfs dfs -test -e twitter/single/nongeo.tweets.csv"
+# Crea un csv con todos los datos de la carpeta twitter/nongeo/*
+create_nongeo="hdfs dfs -getmerge twitter/nongeo/* nongeo.csv"
+# Agrega cada linea del fichero nongeo.csv al fichero nongeo.tweets.csv
+merge_nongeo_local="cat nongeo.csv >> nongeo.tweets.csv"
+# Suma el fichero 'nongeo.csv' del local al 'twitter/single/nongeo.tweets.csv' del hdfs
+merge_nongeo_dfs="hdfs dfs -appendToFile nongeo.csv twitter/single/nongeo.tweets.csv"
+# Sube el fichero a hdfs
+upload_nongeo="hdfs dfs -put nongeo.tweets.csv twitter/single/"
+\end{lstlisting}
+
+La segunda fase de este script consiste en comprobar si este proceso se ha realizado anteriormente y en caso afirmativo ya no sería necesario construir una cabecera, tan solo sería necesario agregar los nuevos registros al fichero existente. Dado que este proceso requiere un tiempo se han agregado varias salidas por pantalla para mantener al usuario informado del desarrollo del script. Esta segunda fase se puede ver en el fragmento de código \ref{tw:bash2}.
+
+\begin{lstlisting}[label=tw:bash2,language=sh,frame=single,caption=Código bash de evaluación. , firstnumber=40,numbers=left]
+echo "Evaluando fichero geo"
+if [ '$exist_geo' == '1' ]; then
+	echo "No existe fichero ../geo.tweets.csv"
+	echo "Creando cabecera de csv"
+	echo 'lang, country, text' > geo.tweets.csv
+	echo "Exportando datos del hdfs"
+	eval $create_geo
+	echo "Creando fichero local con cabecera"
+	eval $merge_geo_local
+	echo "Subiendo fichero ../geo.tweets.csv"
+	eval $upload_geo
+	echo "fichero ../geo.tweets.csv subido"
+	echo "Eliminando ficheros geo auxiliares..."
+	eval $remove_geo_local
+	eval $remove_geo_tweets
+	echo "Ficheros auxilaires geo, eliminados!"
+else
+	echo "Existe el fichero ../geo.tweets.csv"
+	echo "Exportando datos del hdfs"
+	eval $create_geo
+	echo "Uniendo fichero local con hdfs"
+	eval $merge_geo_dfs
+	echo "Eliminando fichero geo auxiliar..."
+	eval $remove_geo_local
+	echo "Fichero geo auxiliar, eliminado!"
+fi
+\end{lstlisting}

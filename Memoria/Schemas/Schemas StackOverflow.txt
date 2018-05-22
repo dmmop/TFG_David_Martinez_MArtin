@@ -1,0 +1,24 @@
+
+
+Posts 						 History 						Tags 				
+ |-- AcceptedAnswerId			|-- Comment 		 		|-- Count 				
+ |-- AnswerCount 				|-- CreationDate 			|-- ExcerptPostId		
+ |-- Body 						|-- Id  					|-- Id
+ |-- ClosedDate  				|-- PostHistoryTypeId 		|-- TagName
+ |-- CommentCount				|-- PostId 					|-- WikiPostId
+ |-- CommunityOwnedDate 		|-- RevisionGUID
+ |-- CreationDate 				|-- Text
+ |-- FavoriteCount 				|-- UserDisplayName
+ |-- Id 						|-- UserId					
+ |-- LastActivityDate 										Badges
+ |-- LastEditDate				Votes						 |-- Class
+ |-- LastEditorDisplayName 	 	|-- BountyAmount 			 |-- Date
+ |-- LastEditorUserId  			|-- CreationDate 			 |-- Id
+ |-- OwnerDisplayName  			|-- Id 						 |-- Name
+ |-- OwnerUserId  				|-- PostId 					 |-- TagBased
+ |-- ParentId  					|-- UserId 					 |-- UserId
+ |-- PostTypeId  				|-- VoteTypeId
+ |-- Score						
+ |-- Tags 						PostTags
+ |-- Title 						|-- PostId
+ |-- ViewCount 					|-- TagsId

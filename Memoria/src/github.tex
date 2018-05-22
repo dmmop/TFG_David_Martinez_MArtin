@@ -1,0 +1,381 @@
+\chapter{GitHub \label{sec:github}}
+
+\section{Introducción}
+GitHub es un repositorio de versiones basado en \textit{Git} \cite{git}, el cual siguiendo la filosofía de \textit{open data} \cite{opendata} proporciona una \gls{API} desde la que se pueden descargar los eventos almacenados desde 2015 a través de \textit{GitHub Archive} \cite{githubArchive}.
+
+Nacido en 2008 en una oficina del Valle de San Francisco (como tantos otros proyectos), GitHub tiene hoy más de 9 millones de usuarios registrados, más de 200 millones de visitas al mes y ha sido valorado en más de 2000 millones de dólares (por lo que está en la Unicorn List \cite{unicornList} de Fortune). Utilizan GitHub para gestionar y almacenar su código desde Google a la Casa Blanca pasando por Facebook o incluso el Ayuntamiento de Madrid \cite{gitAytoMad}.
+
+\clearpage
+\section{Análisis de datos}
+Para el análisis de datos se configurará una sesión de \textit{Apache Spark} como se ha indicado en el código \ref{stof:anaImport} y cargaremos una pequeña muestra de datos. El aprovisionamiento de datos se explicará más adelante.
+
+La primera parte consiste en identificar el \textit{schema} para visualizar la estructura de los datos proporcionados por GitHub. La estructura completa está compuesta por un total de $752$ campos, esta se puede consultar en el apéndice \ref{sc:github}.
+
+Lo ideal sería obtener los \textit{commits} diarios de cada lenguaje. Para ello analizamos los 38 tipos de eventos \cite{gitEvents} que proporciona la \gls{API} de GitHub. Como resultado se decide que el evento que vamos a utilizar como medida de referencia va a ser el ``PushEvent'', el cual contiene los \textit{commits} realizados por los usuarios de la plataforma.
+
+Se observa que dicho evento efectivamente proporciona el número de \textit{commits} realizados por un usuario, así como la fecha y hora en la que se realiza pero, no aporta ningún dato referente al lenguaje que contiene dicho \textit{commit}.
+
+Para obtener los lenguajes se evalúa la posibilidad de utilizar la \gls{API} para realizar la solicitud del lenguaje correspondiente al repositorio sobre el que se realiza el \textit{commit}. En una primera revisión de dicha \gls{API} visualizamos que existe un límite de peticiones de la misma, siendo esta de $60$ solicitudes por hora para usuarios no identificados y en caso de identificarse el límite sube apenas a $5000$. Teniendo en cuenta el volumen de los datos se descarta esta opción.
+
+Por todo ello se decide realizar un segundo análisis de la estructura para intentar identificar si existe la posibilidad de extraer estos datos de otro tipo de evento. En el transcurso de la misma se identifican dos eventos que proporcionan la información del lenguaje identificado en el repositorio, estos eventos son ``PullRequestReviewCommentEvent'' y ``PullRequestEvent''.
+
+Como resultado de lo comentado anteriormente se decide generar dos conjuntos de datos, uno con las fechas, número e \textit{id} del repositorio sobre el que se realiza el commit y otro con el \textit{id} y los lenguajes asociados al mismo, para posteriormente cruzar los datos y obtener los resultados deseados.
+
+
+\section{Aprovisionamiento de datos}
+En esta fase debido a las modestas dimensiones del clúster y la gran cantidad de datos (más de $600$Gb/día) se realizara un pequeño aprovisionamiento para poder realizar el análisis y luego el aprovisionamiento completo consecuencia del análisis realizado. Como se ha comentado anteriormente GitHub dispone de una página web desde la que se pueden descargar los eventos generados en el sistema, organizados por año, mes, día y hora; esta pagina llamada \textit{GitHub Archive} \cite{githubArchive} permite descargar estos datos mediante el comando ``wget'' de linux tal y como se muestra en la tabla \ref{git:archiveIns}.
+
+\begin{table}[htp!]
+	\centering
+	\caption{Tabla de instrucciones de descarga de \textit{GitHub Archive}\cite{githubArchive}.}
+	\label{git:archiveIns}
+	\resizebox{\textwidth}{!}{%
+	\begin{tabular}{|l|l|}
+		\hline
+		\textbf{Query}                   & \textbf{Command}                                                        \\ \hline
+		Activity for 1/1/2015 @ 3PM UTC  & wget http://data.githubarchive.org/2015-01-01-15.json.gz                \\ \hline
+		Activity for 1/1/2015            & wget http://data.githubarchive.org/2015-01-01-\{0..23\}.json.gz         \\ \hline
+		Activity for all of January 2015 & wget http://data.githubarchive.org/2015-01-\{01..30\}-\{0..23\}.json.gz \\ \hline
+	\end{tabular}%
+	}
+\end{table}
+\subsection{Aprovisionamiento de datos pre-análisis}
+Para poder realizar el análisis ya que no podemos obtener los datos completos debido a las limitaciones vamos obtener una pequeña muestra, esta se obtiene con la ejecución del comando mostrado en el código \ref{git:predownload}. Todos estos ficheros vienen comprimidos en formato ``.gz'', para automatizar la extracción se ha creado un pequeño script (ver código \ref{git:preExtract}).
+
+\begin{lstlisting}[label=git:predownload,language=sh,frame=single,caption=Comando para el preaprovisionamiento de datos de GitHub.]
+mkdir git
+cd git
+wget http://data.githubarchive.org/2015-01-01-\{0..23\}.json.gz
+\end{lstlisting}
+
+\begin{lstlisting}[label=git:preExtract,language=sh,frame=single,caption=Script para la extracción automática de los ficheros de GitHub.]
+#!/bin/bash
+for filename in $HOME/git/*.gz; do
+	printf "\nExtracting $filename..."
+	gzip -d $filename
+	printf "...SUCCESFULLY"
+done
+\end{lstlisting}
+
+\subsection{Aprovisionamiento de datos post-análisis}
+Una vez identificados los tres tipos de eventos que deseamos recuperar, procedemos a codificar una solución para paliar la escasez de capacidad del clúster.
+
+La aplicación va a generar tres ficheros dónde se guardaran los \textit{commits}, los lenguajes y los eventos que hayan reportado problemas. Para hacer la ejecución más eficiente se ejecutarán $16$ hilos en paralelo, se mantendrán los ficheros abiertos y accesibles de forma única en cada hilo para evitar problemas de concurrencia.
+
+Lo primero será generar los procesos, los enlaces de descarga y balancearlos entre los primeros. Esta parte se hace en el método ``create\_balance\_threads()'' (ver línea 26 en código \ref{git:main}). Una vez creado los enlaces y los procesos se ejecutan.
+
+\clearpage
+\begin{lstlisting}[label=git:main,language=java,frame=single,caption=Clase \textit{Main} de la aplicación de aprovisionamiento de datos de GitHub., firstnumber=7,numbers=left]
+public class Main {
+	private static final int HILOS = 16;
+	// URL sobre la que se construye la peticion (anho, mes, dia y hora)
+	private static final String URL_BASE = "http://data.githubarchive.org/20%d-%02d-%02d-%02d.json.gz";
+	
+	//Lista con todos los hilos que se van a lanzar
+	private static final ArrayList<Process> process_list = new ArrayList<>();
+	
+	public static void main(String[] args) {
+		long start = System.nanoTime();
+		create_balance_threads();
+		launch_threads();
+		long time = System.nanoTime() - start;
+		System.out.printf("Took %.3f seconds", time / 1e9);
+	}
+	
+	/**
+	* Genera un numero de hilos y distribuye uniformemente los ficheros que se descargaran
+	*/
+	private static void create_balance_threads(){
+		int balanced = 0;
+		for (int i = 0; i < HILOS; i++) process_list.add(new Process());
+		URL url;
+		for (int anno = 15; anno <= 17; anno++) {
+			for (int mes = 1; mes <= 12; mes++) {
+				for (int dia = 1; dia <= 31; dia++) {
+					for (int hora = 0; hora < 24; hora++) {
+						try {
+							url = new URL(String.format(URL_BASE, anno, mes, dia, hora));
+							process_list.get(balanced).addURLs(url);
+							balanced++;
+							if (balanced == HILOS) balanced = 0;
+						} catch (MalformedURLException e) {
+							e.printStackTrace();
+						}
+					}
+
+				}
+			}	
+		}
+	}
+	
+	/**
+	* Lanza todos los hilos y espera a que se termine de ejecutar
+	*/
+	private static void launch_threads(){
+		process_list.forEach(Thread::start);
+		process_list.forEach(hilo -> {
+			try {
+				hilo.join();
+			} catch (InterruptedException e) {
+				e.printStackTrace();
+			}
+		});
+		Process.close_files();
+	}
+}
+\end{lstlisting}
+
+Como se puede apreciar en el fragmento de código \ref{git:main} cada hilo pertenece a una clase llamada ``Process''. Esta clase realiza la descarga de datos, y hace la lectura del documento línea a línea, cada una de estas se envía a la tercera clase que es la encargada de comprobar su contenido y extraer los campos necesarios según el tipo de evento.
+
+Vamos a ver la clase ``Process'', la primera parte (ver fragmento de código \ref{git:proc1}) consiste en la declaración de las constantes y variables que se van a utilizar, así como la apertura de los ficheros de salida.
+
+\begin{lstlisting}[label=git:proc1,language=java,frame=single,caption={Fragmento de la clase \textit{Process}. Declaración de constantes y apertura de ficheros.}, firstnumber=16,numbers=left]
+private static final String OUTPUT_LANG = "git_langs.json";         // Fichero de salida con los lenguages
+private static final String OUTPUT_COMMITS = "git_commits.json";    // Fichero de salida con los commits
+private static final String OUTPUT_ERROR = "git_errors.json";       // Fichero de salida con los errores
+
+private ArrayList<URL> urls = new ArrayList<>();
+static AtomicInteger processed_links = new AtomicInteger(0);
+private Logger log;
+private Extractor extractor = new Extractor();
+private static PrintWriter out_lang; //Write para usar el disco
+private static PrintWriter out_commit; //Write para usar el disco
+
+
+static {
+	try {
+		out_lang = new PrintWriter(new FileWriter(OUTPUT_LANG, true));
+		out_commit = new PrintWriter(new FileWriter(OUTPUT_COMMITS, true));
+		
+	} catch (IOException e) {
+		e.printStackTrace();
+	}
+}
+\end{lstlisting}
+
+El fragmento de código \ref{git:proc2} realiza la descarga y extracción de los datos, posteriormente se procesa cada línea y se guarda el resultado en el fichero correspondiente. El procesado se realiza mediante la clase ``Extractor'' que se verá más adelante, esta devuelve un \textit{array} con dos campos, donde la posición $1$ devuelve el tipo de evento al que corresponde la información extraída, esta se haya en la posición $0$ de dicho \textit{array}.
+
+\begin{lstlisting}[label=git:proc2,language=java,frame=single,caption={Fragmento de la clase \textit{Process}. Descarga, extracción y guardado.}, firstnumber=56,numbers=left]
+private void downloadUsingNIO(URL url) {
+	String line = "";
+	String result[];
+	try {
+		GZIPInputStream gzip = new GZIPInputStream(url.openStream());
+		BufferedReader bf = new BufferedReader(new InputStreamReader(gzip, "UTF-8"));
+		while ((line = bf.readLine()) != null) {
+			if (line.length() > 0) {
+				result = extractor.extract(line);
+				if (result != null) {
+					if (result[1].equals(String.valueOf(LANG_TYPE))) write_lang(result[0]);
+					else if (result[1].equals(String.valueOf(COMMIT_TYPE))) write_commit(result[0]);
+				}
+			}
+		}
+	} catch (PathNotFoundException e) {
+	log.warning("Fallo al encontrar el path: " + line);
+	log_error(line);
+	
+	} catch (IOException e) {
+	log.warning(e.getMessage());
+	}
+	processed_links.incrementAndGet();
+}
+\end{lstlisting}
+
+Como ya se ha comentado, la clase ``Extractor'' es la encargada de procesar cada evento, comprobar si este pertenece a alguno de los eventos que deseamos guardar, en caso de pertenecer comprueba si será usado para extraer los lenguajes o los \textit{commits}. Realiza la extracción de los datos seleccionados para cada caso y devuelve un json con los campos deseados, así como la identificación de contenido del evento.
+
+En el fragmento \ref{git:ext1} se declaran las constantes utilizadas para el proceso, entre las que se incluyen los literales de los eventos útiles y los \gls{XPath}
+
+\clearpage
+\begin{lstlisting}[label=git:ext1,language=java,frame=single,caption={Fragmento de la clase \textit{Extractor}. Declaración de constantes.}, firstnumber=10,numbers=left]
+// Declaracion de eventos
+private static final String EVENT_TYPE1 = "PullRequestReviewCommentEvent";
+private static final String EVENT_TYPE2 = "PullRequestEvent";
+private static final String EVENT_TYPE3 = "PushEvent";
+// XPath necesarios
+private static final String ID_EXPR = "$.repo.id";
+private static final String HEAD_EXPR = "$.payload.pull_request.head.repo.language";
+private static final String BASE_EXPR = "$.payload.pull_request.base.repo.language";
+private static final String TYPE_EXPR = "$.type";
+private static final String TIME_EXPR = "$.created_at";
+private static final String SIZE_EXPR = "$.payload.size";
+
+public static final int LANG_TYPE = 0;
+public static final int COMMIT_TYPE = 1;
+\end{lstlisting}
+
+El método principal (ver fragmento \ref{git:ext2}) recibe el \gls{JSON} completo, comprueba que existan los eventos deseados y actúa en consecuencia de la devolución. Si el \gls{JSON} posee datos de lenguaje o \textit{commits}, los extrae, en cualquier otro caso devuelve \textit{null}.
+
+\begin{lstlisting}[label=git:ext2,language=java,frame=single,caption={Fragmento de la clase \textit{Extractor}. Método principal.}, firstnumber=30,numbers=left]
+public String[] extract(String line) throws PathNotFoundException {
+	line = line.replaceAll("\n", ""); // Normalizar linea
+	String result[] = new String[2];
+	int type = check_type(line); //Comprobar type event
+	
+	if (type == LANG_TYPE) {
+		result[0] = extract_langs(line);
+		result[1] = String.valueOf(LANG_TYPE);
+	} else if (type == COMMIT_TYPE) {
+		result[0] = extract_commits(line);
+		result[1] = String.valueOf(COMMIT_TYPE);
+	
+	} else result = null;
+	
+	return result;
+}
+\end{lstlisting}
+
+Para la comprobación del tipo de evento se realiza la extracción del campo \textit{``type''} y se comprueba con los literales declarados en el fragmento \ref{git:ext1}, haciendo uso del \gls{XPath} definido a tal efecto. El método encargado de esto se puede ver en el fragmento de código \ref{git:proc3}.
+
+\clearpage
+\begin{lstlisting}[label=git:proc3,language=java,frame=single,caption={Fragmento de la clase \textit{Extractor}. Comprobación de tipo.}, firstnumber=54,numbers=left]
+private int check_type(String line) throws PathNotFoundException {
+	int type_num = -1;
+	String type = JsonPath.read(line, TYPE_EXPR);
+	
+	if (type.equalsIgnoreCase(EVENT_TYPE1) || type.equalsIgnoreCase(EVENT_TYPE2)) type_num = LANG_TYPE;
+	else if (type.equalsIgnoreCase(EVENT_TYPE3)) type_num = COMMIT_TYPE;
+	else type_num = -1;
+	
+	return type_num;
+}
+\end{lstlisting}
+
+Una vez que el tipo de evento ha sido identificado, se realiza la extracción de los datos elegidos durante el análisis. Para ello se hace uso de los \gls{XPath} definidos a tal efecto, cada \gls{JSON} recibido por esta clase es reducido a los campos indispensables, por lo tanto una vez extraídos los campos de lenguaje (ver fragmento \ref{git:proc4}) o los campos de relacionados con los \textit{commits} (ver fragmento \ref{git:proc5}) estos son añadidos a un \textit{HashMap} y devolviendo un \gls{JSON} generado a partir del mapa.
+
+\begin{lstlisting}[label=git:proc4,language=java,frame=single,caption={Fragmento de la clase \textit{Extractor}. Método de extracción de lenguajes.}, firstnumber=71,numbers=left]
+private String extract_langs(String line) throws PathNotFoundException {
+	HashMap<String, String> language_event = new HashMap<>();
+	language_event.put("id", JsonPath.read(line, ID_EXPR).toString());
+	language_event.put("repo_head_lang", JsonPath.read(line, HEAD_EXPR));
+	language_event.put("repo_base_lang", JsonPath.read(line, BASE_EXPR));
+	
+	return new JSONObject(language_event).toJSONString();
+}
+\end{lstlisting}
+
+\begin{lstlisting}[label=git:proc5,language=java,frame=single,caption={Fragmento de la clase \textit{Extractor}. Método de extacción de \textit{commits}.}, firstnumber=86,numbers=left]
+private String extract_commits(String line) throws PathNotFoundException {
+	HashMap<String, String> language_event = new HashMap<>();
+	language_event.put("id", JsonPath.read(line, ID_EXPR).toString());
+	language_event.put("size", JsonPath.read(line, SIZE_EXPR).toString());
+	language_event.put("time", JsonPath.read(line, TIME_EXPR).toString().substring(0, 10));
+	
+	return new JSONObject(language_event).toJSONString();
+}
+\end{lstlisting}
+
+\section{Procesado de datos}
+Llegados a este punto, con el aprovisionamiento de datos completo solo queda relacionar cada repositorio con su lenguaje correspondiente.
+
+Como habíamos previsto algunos eventos han generado errores, vamos a descubrir que ha fallado en primer lugar, para ello se importa el fichero \gls{JSON} (ver código \ref{git:importDF}) y se eliminan los registros corruptos.
+
+\begin{lstlisting}[label=git:importDF,language=python,frame=single,caption={Creación del \textit{DataFrame} y su tabla temporal}]
+errors = spark.read.json('git/git_errors.json')
+errors = errors.filter(errors._corrupt_record.isNull()).drop(errors._corrupt_record)
+errors.createOrReplaceTempView("errors")
+
+langs = spark.read.json('git/git_langs.json')
+langs.createOrReplaceTempView("langs")
+
+commits = spark.read.json('git/git_commits.json')
+commits.createOrReplaceTempView("commits")
+\end{lstlisting}
+
+Estos ficheros corresponden al resultado del aprovisionamiento de datos, para comprobar cual es el problema intentamos realizar la extracción de datos mediante \textit{Apache Spark} y nos da como resultado la tabla \ref{langError}, en la cual podemos apreciar que el error procede de un resultado nulo al identificar el lenguaje de la cabecera. Los errores suponen información de $13673$ repositorios, por lo tanto, se recuperará esta información.
+
+\begin{table}[htp!]
+	\centering
+	\caption{Resultados extraídos de los errores en el proceso de aprovisionamiento.}
+	\label{langError}
+	\begin{tabular}{|l|l|l|}
+		\hline
+		\textbf{id}       & \textbf{repo\_base\_lang} & \textbf{repo\_head\_lang}  \\ \hline
+		13746419 & C\#              & null  \\
+		2464908  & PHP              & null  \\
+		117358   & Perl6            & null  \\
+		8869463  & Haxe             & null  \\
+		2625205  & Python           & null  \\
+		10941409 & JavaScript       & null  \\
+		9426192  & Python           & null  \\
+		23259263 & JavaScript       & null  \\
+		206341   & Java             & null  \\
+		1141571  & JavaScript       & null  \\
+		7850354  & C                & null  \\
+		27539466 & JavaScript       & null  \\
+		1975671  & PHP              & null  \\
+		17312031 & JavaScript       & null  \\
+		10653734 & Scheme           & null  \\
+		25968039 & Java             & null  \\
+		5782574  & Lua              & null  \\
+		17293434 & JavaScript       & null  \\
+		5022564  & JavaScript       & null  \\
+		905738   & Objective-C      & null  \\ \hline
+	\end{tabular}
+\end{table}
+
+Para recuperar estos datos y tener una base de datos de los lenguajes de cada repositorio más completa, vamos a extraer los repositorios que no existan en el \textit{dataset} de lenguajes y vamos a unir ambos. Código \ref{git:mixLangs}.
+
+\begin{lstlisting}[label=git:mixLangs,language=python,frame=single,caption={Creación de un \textit{DataFrame} diferencial de lenguajes y unión de ambas.}]
+lang_error = spark.sql("SELECT * FROM lang_error WHERE id NOT IN (SELECT id FROM langs)")
+langs = langs.unionAll(lang_error)
+\end{lstlisting}
+
+Llegados a este punto poseemos dos \textit{datasets}, uno con lenguajes asociados a un repositorio y otro con \textit{commits} asociados a un repositorio. Lo único que resta es cruzar estos datos para ello se hará uso la consulta \gls{SQL} del código \ref{git:sqlFinal}. El resultado final se puede apreciar en la tabla \ref{git:resultFinal}.
+\cleardoublepage
+\begin{lstlisting}[label=git:sqlFinal,language=SQL,frame=single,caption={\gls{SQL} para cruzar datos de lenguajes y \textit{commits}.}]
+SELECT 
+	c.time,
+	c.size,
+	l.repo_base_lang, 
+	l.repo_head_lang 
+FROM commits c 
+INNER JOIN langs l ON c.id = l.id;
+\end{lstlisting}
+
+Dado qué vamos a utilizar el campo ``repo\_base\_lang'' para graficar, hay que asegurar que no haya campos nulos en esta columna ni duplicados vamos a convertir este \textit{dataframe} en un \gls{RDD} para poder tratar los datos.
+
+En el código \ref{git:rdd1} se muestra una función simple donde en caso de que el campo ``base'' sea nulo se le da el valor del campo ``head''. Además como se ha comentado en la sección \ref{sec:estado_del_arte} los \textit{dataframes} son objetos inalterable, por lo que el primer paso es obtener un \gls{RDD}, realizar la transformación señalada y eliminar los campos nulos. Posteriormente se agrupan los datos por fecha y lenguaje y se suman los resultados para obtener un peso por fecha y lenguaje.
+
+\begin{lstlisting}[label=git:rdd1,language=python,frame=single,caption={Transformaciones del \gls{RDD} para asegurar la calidad del dato.}]
+def complete(x):
+	if x[2] is None and x[3] is not None:
+		return (x[0], x[1], x[3], x[3])
+	return x
+	
+rstRDD = result.rdd.map(complete).filter(lambda x: x[2] is not None)
+result = rstRDD.toDF().groupBy(result.time, result.repo_base_lang, result.size).sum()
+\end{lstlisting}
+
+\begin{table}[htp!]
+	\centering
+	\caption{Tabla de resultados cruzados de GitHub.}
+	\label{git:resultFinal}
+	\begin{tabular}{|r|r|r|r|r|}
+		\hline
+		\multicolumn{1}{|c|}{\textbf{date}} & \multicolumn{1}{c|}{\textbf{size}} & \multicolumn{1}{c|}{\textbf{id}} & \multicolumn{1}{c|}{\textbf{repo\_base\_lang}} & \multicolumn{1}{c|}{\textbf{repo\_head\_lang}} \\ \hline
+		2017-01-01                          & 1                                  & 15615485                         & JavaScript                                     & JavaScript                                     \\
+		2017-01-01                          & 1                                  & 77792086                         & Shell                                          & Shell                                          \\
+		2017-01-01                          & 1                                  & 75845481                         & Python                                         & Python                                         \\
+		2017-01-01                          & 2                                  & 76744795                         & TypeScript                                     & TypeScript                                     \\
+		2017-01-01                          & 1                                  & 19610165                         & JavaScript                                     & JavaScript                                     \\
+		2017-01-01                          & 1                                  & 68236778                         & Arduino                                        & Arduino                                        \\
+		2017-01-01                          & 1                                  & 19610165                         & JavaScript                                     & JavaScript                                     \\
+		2017-01-01                          & 24                                 & 53193142                         & CSS                                            & CSS                                            \\
+		2017-01-01                          & 2                                  & 72273997                         & null                                           & Python                                         \\
+		2017-01-01                          & 14                                 & 28008709                         & VimL                                           & VimL                                           \\
+		2017-01-01                          & 1                                  & 76200114                         & HTML                                           & HTML                                           \\
+		2017-01-01                          & 12                                 & 76391154                         & JavaScript                                     & JavaScript                                     \\
+		2017-01-01                          & 2                                  & 5542032                          & JavaScript                                     & JavaScript                                     \\
+		2017-01-01                          & 2                                  & 56255411                         & HTML                                           & HTML                                           \\
+		2017-01-01                          & 2                                  & 77799473                         & PHP                                            & Rust                                           \\
+		2017-01-01                          & 1                                  & 77365497                         & PowerShell                                     & PowerShell                                     \\
+		2017-01-01                          & 3                                  & 74260508                         & JavaScript                                     & JavaScript                                     \\
+		2017-01-01                          & 1                                  & 60346491                         & PHP                                            & PHP                                            \\
+		2017-01-01                          & 1                                  & 29375063                         & JavaScript                                     & JavaScript                                     \\
+		2017-01-01                          & 3                                  & 77765458                         & Java                                           & Java                                           \\ \hline
+	\end{tabular}
+\end{table}
+
+\clearpage
+\section{Graficado de datos}

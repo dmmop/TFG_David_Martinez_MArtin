@@ -1,0 +1,19 @@
+root
+ |-- created_at: string (nullable = true)
+ |-- geo: struct (nullable = true)
+ |    |-- coordinates: array (nullable = true)
+ |    |    |-- element: double (containsNull = true)
+ |    |-- type: string (nullable = true)
+ |-- lang: string (nullable = true)
+ |-- place: struct (nullable = true)
+ |    |-- country: string (nullable = true)
+ |    |-- country_code: string (nullable = true)
+ |    |-- full_name: string (nullable = true)
+ |    |-- id: string (nullable = true)
+ |    |-- name: string (nullable = true)
+ |    |-- place_type: string (nullable = true)
+ |    |-- url: string (nullable = true)
+ |-- text: string (nullable = true)
+ |-- timestamp_ms: string (nullable = true)
+
+

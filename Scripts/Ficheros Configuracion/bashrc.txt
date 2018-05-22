@@ -1,0 +1,44 @@
+# Java
+export JAVA_HOME=/usr/lib/jvm/java-8-oracle
+export PATH=$PATH:$JAVA_HOME/bin
+export PATH=$PATH:$JAVA_HOME
+
+# Hadoop
+export HADOOP_HOME=/opt/hadoop
+export PATH=$PATH:$HADOOP_HOME/bin
+export PATH=$PATH:$HADOOP_HOME/sbin
+
+export HADOOP_CONF_DIR=$HADOOP_HOME/etc/hadoop
+export HADOOP_MAPRED_HOME=$HADOOP_HOME
+export HADOOP_COMMON_HOME=$HADOOP_HOME
+export HADOOP_HDFS_HOME=$HADOOP_HOME
+
+export HADOOP_YARN_HOME=$HADOOP_HOME
+export YARN_HOME=$HADOOP_HOME
+
+export HADOOP_COMMON_LIB_NATIVE=$HADOOP_HOME/lib/native
+export HADOOP_OPTS="-Djava.library.path=$HADOOP_HOME/lib"
+export CLASSPATH=$CLASSPATH:$HADOOP_HOME/lib/*
+
+# Spark 
+export SPARK_HOME=/opt/spark
+export PATH=$PATH:$SPARK_HOME/bin
+export LD_LIBRARY_PATH=$HADOOP_COMMON_LIB_NATIVE:$LD_LIBRARY_PATH
+export PYSPARK_PYTHON=/opt/anaconda3/bin/python3.6
+export PYSPARK_DRIVER_PYTHON=/opt/anaconda3/bin/python3.6
+
+
+# Flume
+export FLUME_HOME=/opt/flume
+export PATH=$PATH:/$FLUME_HOME/bin
+export CLASSPATH=$CLASSPATH:/$FLUME_HOME/lib/*
+
+# Alias
+alias h="hdfs dfs $@"
+alias hls="hdfs dfs -ls -h $@"
+alias hrm="hdfs dfs -rm -r $@"
+alias hreport="hdfs dfsadmin -report"
+alias hsafe="hdfs dfsadmin -safemode leave"
+
+# added by Anaconda3 installer
+export PATH="/opt/anaconda3/bin:$PATH"
